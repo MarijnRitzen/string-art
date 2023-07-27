@@ -3,7 +3,8 @@
 #![cfg(target_arch = "wasm32")]
 
 extern crate wasm_bindgen_test;
-use string_art::Universe;
+use ndarray::array;
+use string_art::get_line_pixels;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -13,34 +14,55 @@ fn pass() {
     assert_eq!(1 + 1, 2);
 }
 
-#[cfg(test)]
-pub fn input_spaceship() -> Universe {
-    let mut universe = Universe::new();
-    universe.set_width(6);
-    universe.set_height(6);
-    universe.set_cells(&[(1, 2), (2, 3), (3, 1), (3, 2), (3, 3)]);
-    universe
-}
-
-#[cfg(test)]
-pub fn expected_spaceship() -> Universe {
-    let mut universe = Universe::new();
-    universe.set_width(6);
-    universe.set_height(6);
-    universe.set_cells(&[(2, 1), (2, 3), (3, 2), (3, 3), (4, 2)]);
-    universe
+fn get_index(col: u32, row: u32) -> u32 {
+    row * 7 + col
 }
 
 #[wasm_bindgen_test]
-pub fn test_tick() {
-    // Let's create a smaller Universe with a small spaceship to test!
-    let mut input_universe = input_spaceship();
+fn test_pixel_line() {
+    // Assuming RADIUS = 3
+    assert_eq!(
+        get_line_pixels((0, 0), (3, 3)),
+        vec![
+            get_index(0, 0),
+            get_index(1, 1),
+            get_index(2, 2),
+            get_index(3, 3)
+        ]
+    );
 
-    // This is what our spaceship should look like
-    // after one tick in our universe.
-    let expected_universe = expected_spaceship();
+    assert_eq!(
+        get_line_pixels((0, 0), (3, 0)),
+        vec![
+            get_index(0, 0),
+            get_index(1, 0),
+            get_index(2, 0),
+            get_index(3, 0)
+        ]
+    );
+}
 
-    // Call `tick` and then see if the cells in the `Universe`s are the same.
-    input_universe.tick();
-    assert_eq!(&input_universe.get_cells(), &expected_universe.get_cells());
+#[wasm_bindgen_test]
+fn test_norm_squared() {
+    // Two horizontal lines in a 2 x 3 pixel world
+    let mut a = array![
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        [0.0, 1.0]
+    ];
+
+    // Top left and middle top pixel drawn in
+    let mut b = array![1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+
+    // Just using the first line should be better than using the second line
+    let x = array![1.0, 0.0];
+
+    let diff = a.dot(&x) - &b;
+
+    let norm_squared = diff.dot(&diff);
+
+    assert_eq!(norm_squared, 1.0);
 }

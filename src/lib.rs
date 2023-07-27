@@ -1,11 +1,15 @@
 mod utils;
 
-use std::fmt;
+use std::f64::consts::PI;
 
 extern crate js_sys;
+use ndarray::{concatenate, Array1, Array2, Axis};
 use wasm_bindgen::prelude::*;
-use web_sys::console;
-extern crate web_sys;
+
+const NAIL_COUNT: u16 = 4;
+const RADIUS: u16 = 3;
+const LINE_COUNT: u32 = NAIL_COUNT as u32 * (NAIL_COUNT - 1) as u32 / 2 as u32;
+const PIXEL_COUNT: u32 = (RADIUS * 2 + 1) as u32 * (RADIUS * 2 + 1) as u32;
 
 // A macro to provide `println!(..)`-style syntax for `console.log` logging.
 macro_rules! log {
@@ -15,237 +19,233 @@ macro_rules! log {
 }
 
 #[wasm_bindgen]
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cell {
-    Dead = 0,
-    Alive = 1,
-}
-
-impl Cell {
-    fn toggle(&mut self) {
-        *self = match *self {
-            Cell::Dead => Cell::Alive,
-            Cell::Alive => Cell::Dead,
-        };
-    }
+#[derive(Debug)]
+pub struct Line {
+    start: u16,
+    end: u16,
+    pixels: Vec<u32>, // Array of indices where top left is 0 and goes left to right, top to bottom
 }
 
 #[wasm_bindgen]
-pub struct Universe {
-    width: u32,
-    height: u32,
-    cells: Vec<Cell>,
+pub struct Disk {
+    num_points: u16,
+    radius: u16,
+    drawn: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
+    image: Vec<u8>,
+    lines: Vec<Line>,
+    a: Array2<f64>,
+    x: Array1<f64>,
 }
 
-/// Public methods, exported to JavaScript.
 #[wasm_bindgen]
-impl Universe {
-    fn get_index(&self, row: u32, column: u32) -> usize {
-        (row * self.width + column) as usize
-    }
+pub fn get_line_index(source_nail: u16, target_nail: u16) -> u16 {
+    source_nail * (NAIL_COUNT - 1) + target_nail
+}
 
-    pub fn reset_dead(&mut self) {
-        self.cells = (0..self.width * self.height).map(|_i| Cell::Dead).collect();
-    }
+fn from_line_index(index: u16) -> (u16, u16) {
+    (index / (NAIL_COUNT - 1), index % (NAIL_COUNT - 1))
+}
 
-    pub fn reset_random(&mut self) {
-        self.cells = (0..self.width * self.height)
-            .map(|_i| {
-                if js_sys::Math::random() < 0.5 {
-                    Cell::Dead
-                } else {
-                    Cell::Alive
-                }
-            })
-            .collect();
-    }
-
-    fn live_neighbor_count(&self, row: u32, column: u32) -> u8 {
-        let mut count = 0;
-
-        let north = if row == 0 { self.height - 1 } else { row - 1 };
-
-        let south = if row == self.height - 1 { 0 } else { row + 1 };
-
-        let west = if column == 0 {
-            self.width - 1
-        } else {
-            column - 1
-        };
-
-        let east = if column == self.width - 1 {
-            0
-        } else {
-            column + 1
-        };
-
-        let nw = self.get_index(north, west);
-        count += self.cells[nw] as u8;
-
-        let n = self.get_index(north, column);
-        count += self.cells[n] as u8;
-
-        let ne = self.get_index(north, east);
-        count += self.cells[ne] as u8;
-
-        let w = self.get_index(row, west);
-        count += self.cells[w] as u8;
-
-        let e = self.get_index(row, east);
-        count += self.cells[e] as u8;
-
-        let sw = self.get_index(south, west);
-        count += self.cells[sw] as u8;
-
-        let s = self.get_index(south, column);
-        count += self.cells[s] as u8;
-
-        let se = self.get_index(south, east);
-        count += self.cells[se] as u8;
-
-        count
-    }
-
-    pub fn tick(&mut self) {
-        let _timer = Timer::new("Universe::tick");
-
-        let mut next = self.cells.clone();
-
-        for row in 0..self.height {
-            for col in 0..self.width {
-                let idx = self.get_index(row, col);
-                let cell = self.cells[idx];
-                let live_neighbors = self.live_neighbor_count(row, col);
-
-                let next_cell = match (cell, live_neighbors) {
-                    // Rule 1: Any live cell with fewer than two live neighbours
-                    // dies, as if caused by underpopulation.
-                    (Cell::Alive, x) if x < 2 => Cell::Dead,
-                    // Rule 2: Any live cell with two or three live neighbours
-                    // lives on to the next generation.
-                    (Cell::Alive, 2) | (Cell::Alive, 3) => Cell::Alive,
-                    // Rule 3: Any live cell with more than three live
-                    // neighbours dies, as if by overpopulation.
-                    (Cell::Alive, x) if x > 3 => Cell::Dead,
-                    // Rule 4: Any dead cell with exactly three live neighbours
-                    // becomes a live cell, as if by reproduction.
-                    (Cell::Dead, 3) => Cell::Alive,
-                    // All other cells remain in the same state.
-                    (otherwise, _) => otherwise,
-                };
-
-                next[idx] = next_cell;
-            }
-        }
-
-        self.cells = next;
-    }
-
-    pub fn new() -> Universe {
+#[wasm_bindgen]
+impl Disk {
+    pub fn new() -> Disk {
         utils::set_panic_hook();
 
-        let width = 128;
-        let height = 128;
+        let mut lines = Vec::new();
 
-        let cells = (0..width * height)
-            .map(|i| {
-                if i % 2 == 0 || i % 7 == 0 {
-                    Cell::Alive
-                } else {
-                    Cell::Dead
+        log!("Calculating lines...");
+        for start in 0..NAIL_COUNT - 1 {
+            for end in start + 1..NAIL_COUNT {
+                let start_angle = (2.0 * PI * start as f64) / NAIL_COUNT as f64;
+
+                let start_x = (RADIUS as f64 + RADIUS as f64 * start_angle.cos()) as u16;
+                let start_y = (RADIUS as f64 + RADIUS as f64 * start_angle.sin()) as u16;
+
+                let end_angle = (2.0 * PI * end as f64) / NAIL_COUNT as f64;
+
+                let end_x = (RADIUS as f64 + RADIUS as f64 * end_angle.cos()) as u16;
+                let end_y = (RADIUS as f64 + RADIUS as f64 * end_angle.sin()) as u16;
+
+                let pixels = get_line_pixels((start_x, start_y), (end_x, end_y));
+
+                lines.push(Line { start, end, pixels })
+            }
+        }
+        log!("{lines:?}");
+
+        // Reshape vectors into 2D arrays with a single column and store them in a Vec
+        log!("Building matrix...");
+        let mut counter = 0;
+        let columns: Vec<Array2<f64>> = lines
+            .iter()
+            .map(|line| {
+                let mut pixels = Array2::zeros((PIXEL_COUNT as usize, 1));
+
+                counter += 1;
+
+                if counter % 1_000 == 0 {
+                    log!("{} / {}", counter, LINE_COUNT);
                 }
+
+                line.pixels.iter().for_each(|index| {
+                    if index > &PIXEL_COUNT {
+                        log!("Index out of bounds");
+                    }
+                    pixels[[*index as usize, 0]] = 255.0;
+                });
+
+                pixels
             })
             .collect();
 
-        Universe {
-            width,
-            height,
-            cells,
+        // Convert Vec of 2D arrays into an Array of 2D arrays, and concatenate them into a matrix
+
+        let a: Array2<f64> = concatenate(
+            Axis(1),
+            &columns.iter().map(|v| v.view()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+
+        let x: Array1<f64> = Array1::zeros(LINE_COUNT as usize);
+
+        log!("Ready!");
+
+        Disk {
+            num_points: NAIL_COUNT,
+            radius: RADIUS,
+            drawn: Vec::new(),
+            image: vec![0; PIXEL_COUNT as usize],
+            lines,
+            a,
+            x,
         }
     }
 
-    pub fn render(&self) -> String {
-        self.to_string()
+    pub fn get_num_points(&self) -> u16 {
+        self.num_points
     }
 
-    pub fn width(&self) -> u32 {
-        self.width
+    pub fn get_radius(&self) -> u16 {
+        self.radius
     }
 
-    pub fn height(&self) -> u32 {
-        self.height
+    pub fn size(&self) -> usize {
+        self.drawn.len() * 2 // each line is two points
     }
 
-    pub fn cells(&self) -> *const Cell {
-        self.cells.as_ptr()
+    pub fn lines(&self) -> *const (u16, u16) {
+        self.drawn.iter().cloned().collect::<Vec<_>>().as_ptr()
     }
 
-    /// Set the width of the universe.
-    ///
-    /// Resets all cells to the dead state.
-    pub fn set_width(&mut self, width: u32) {
-        self.width = width;
-        self.cells = (0..width * self.height).map(|_i| Cell::Dead).collect();
-    }
+    pub fn draw(&mut self, canvas_left: u16, canvas_top: u16) {
+        self.image[canvas_top as usize * (self.radius as usize * 2 + 1) + canvas_left as usize] =
+            255;
 
-    /// Set the height of the universe.
-    ///
-    /// Resets all cells to the dead state.
-    pub fn set_height(&mut self, height: u32) {
-        self.height = height;
-        self.cells = (0..self.width * height).map(|_i| Cell::Dead).collect();
-    }
+        log!(
+            "Drawn index {} ",
+            canvas_top as usize * (self.radius as usize * 2 + 1) + canvas_left as usize
+        );
+        log!("Drawing...");
 
-    pub fn toggle_cell(&mut self, row: u32, column: u32) {
-        let idx = self.get_index(row, column);
-        self.cells[idx].toggle();
-    }
-}
+        let b: Array1<f64> = self
+            .image
+            .iter()
+            .map(|x| *x as f64)
+            .collect::<Vec<_>>()
+            .into();
 
-impl fmt::Display for Universe {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for line in self.cells.as_slice().chunks(self.width as usize) {
-            for &cell in line {
-                let symbol = if cell == Cell::Dead { '◻' } else { '◼' };
-                write!(f, "{}", symbol)?;
+        // We want to know ||Ax - b||^2
+
+        // GOAL
+        let mut source_nail = 0;
+
+        let mut smallest_norm_squares = f64::MAX;
+
+        loop {
+            // Find the line that minimizes the Euclidean difference the most
+            let mut smallest = f64::MAX;
+            let mut best_target_nail = 0;
+
+            for target_nail in 0..NAIL_COUNT {
+                if target_nail == source_nail {
+                    continue;
+                }
+
+                get_line_index(source_nail, target_nail);
+
+                let x_clone = self.x.clone();
+
+                // Calculate Ax
+                let ax = self.a.dot(&x_clone);
+
+                // Calculate Ax - b
+                let diff: Array1<f64> = &ax - &b;
+
+                // Calculate ||Ax - b||^2
+                let norm_squared = diff.dot(&diff);
+
+                if norm_squared < smallest {
+                    smallest = norm_squared;
+                    best_target_nail = target_nail;
+                    log!("{} {}", norm_squared, smallest);
+                }
             }
-            write!(f, "\n")?;
+
+            if smallest < smallest_norm_squares {
+                smallest_norm_squares = smallest;
+                self.x[get_line_index(source_nail, best_target_nail) as usize] = 1.0;
+                source_nail = best_target_nail;
+            } else {
+                break;
+            }
         }
 
-        Ok(())
-    }
-}
+        // Update the lines
+        for line in &self.x {
+            if *line > 0.0 {
+                let (source_nail, target_nail) = from_line_index(*line as u16);
 
-impl Universe {
-    /// Get the dead and alive values of the entire universe.
-    pub fn get_cells(&self) -> &[Cell] {
-        &self.cells
-    }
-
-    /// Set cells to be alive in a universe by passing the row and column
-    /// of each cell as an array.
-    pub fn set_cells(&mut self, cells: &[(u32, u32)]) {
-        for (row, col) in cells.iter().cloned() {
-            let idx = self.get_index(row, col);
-            self.cells[idx] = Cell::Alive;
+                self.drawn.push((source_nail, target_nail));
+            }
         }
     }
 }
 
-pub struct Timer<'a> {
-    name: &'a str,
-}
+// For calculating the pixels that intersect with some line
+pub fn get_line_pixels(start: (u16, u16), end: (u16, u16)) -> Vec<u32> {
+    let mut coordinates = Vec::new();
 
-impl<'a> Timer<'a> {
-    pub fn new(name: &'a str) -> Timer<'a> {
-        console::time_with_label(name);
-        Timer { name }
-    }
-}
+    let (mut x0, mut y0) = (start.0 as i32, start.1 as i32);
+    let (x1, y1) = (end.0 as i32, end.1 as i32);
 
-impl<'a> Drop for Timer<'a> {
-    fn drop(&mut self) {
-        console::time_end_with_label(self.name);
+    let dx = (x1 - x0).abs();
+    let dy = (y1 - y0).abs();
+
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+
+    let mut err = if dx > dy { dx } else { -dy } / 2;
+    let mut err2;
+
+    loop {
+        coordinates.push(x0 as u32 + y0 as u32 * (RADIUS * 2 + 1) as u32); //TODO check
+
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+
+        err2 = err;
+
+        if err2 > -dx {
+            err -= dy;
+            x0 += sx;
+        }
+
+        if err2 < dy {
+            err += dx;
+            y0 += sy;
+        }
     }
+
+    coordinates
 }
