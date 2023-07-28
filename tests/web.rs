@@ -65,4 +65,12 @@ fn test_norm_squared() {
     let norm_squared = diff.dot(&diff);
 
     assert_eq!(norm_squared, 1.0);
+
+    let x = array![0.0, 1.0];
+
+    let diff = a.dot(&x) - &b;
+
+    let norm_squared = diff.dot(&diff);
+
+    assert_eq!(norm_squared, 5.0);
 }

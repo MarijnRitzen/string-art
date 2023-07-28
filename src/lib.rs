@@ -1,15 +1,16 @@
 mod utils;
 
-use std::f64::consts::PI;
+use std::{collections::HashSet, f64::consts::PI};
 
 extern crate js_sys;
 use ndarray::{concatenate, Array1, Array2, Axis};
 use wasm_bindgen::prelude::*;
 
-const NAIL_COUNT: u16 = 4;
-const RADIUS: u16 = 3;
+const NAIL_COUNT: u16 = 50;
+const RADIUS: u16 = 100;
 const LINE_COUNT: u32 = NAIL_COUNT as u32 * (NAIL_COUNT - 1) as u32 / 2 as u32;
-const PIXEL_COUNT: u32 = (RADIUS * 2 + 1) as u32 * (RADIUS * 2 + 1) as u32;
+const SIDE_LENGTH: u16 = RADIUS * 2 + 1;
+const PIXEL_COUNT: u32 = SIDE_LENGTH as u32 * SIDE_LENGTH as u32;
 
 // A macro to provide `println!(..)`-style syntax for `console.log` logging.
 macro_rules! log {
@@ -19,31 +20,88 @@ macro_rules! log {
 }
 
 #[wasm_bindgen]
-#[derive(Debug)]
-pub struct Line {
-    start: u16,
-    end: u16,
-    pixels: Vec<u32>, // Array of indices where top left is 0 and goes left to right, top to bottom
-}
-
-#[wasm_bindgen]
 pub struct Disk {
-    num_points: u16,
+    nail_count: u16,
     radius: u16,
-    drawn: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
+    strings: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
     image: Vec<u8>,
-    lines: Vec<Line>,
     a: Array2<f64>,
     x: Array1<f64>,
 }
 
 #[wasm_bindgen]
-pub fn get_line_index(source_nail: u16, target_nail: u16) -> u16 {
-    source_nail * (NAIL_COUNT - 1) + target_nail
+pub fn from_nails_to_index(source_nail: u16, target_nail: u16) -> u16 {
+    assert!(source_nail < target_nail, "a must be less than b");
+    assert!(target_nail < NAIL_COUNT, "b must be less than NAIL_COUNT");
+
+    return (NAIL_COUNT * (NAIL_COUNT - 1) / 2)
+        - ((NAIL_COUNT - source_nail) * ((NAIL_COUNT - source_nail) - 1) / 2)
+        + target_nail
+        - source_nail
+        - 1;
 }
 
-fn from_line_index(index: u16) -> (u16, u16) {
-    (index / (NAIL_COUNT - 1), index % (NAIL_COUNT - 1))
+pub fn from_coordinates_to_pixel(x: u16, y: u16) -> u16 {
+    assert!(x < SIDE_LENGTH, "x must be less than SIDE_LENGTH");
+    assert!(y < SIDE_LENGTH, "y must be less than SIDE_LENGTH");
+
+    return y * SIDE_LENGTH + x;
+}
+
+pub fn from_pixel_to_coordinates(pixel: u32) -> (u32, u32) {
+    assert!(
+        pixel < PIXEL_COUNT,
+        "pixel must be less than PIXEL_COUNT = SIDE_LENGTH * SIDE_LENGTH"
+    );
+
+    return (
+        pixel % (RADIUS as u32 * 2 + 1),
+        pixel / (RADIUS as u32 * 2 + 1),
+    );
+}
+
+fn from_index_to_nails(index: u16) -> (u16, u16) {
+    assert!(
+        index < NAIL_COUNT * (NAIL_COUNT - 1) / 2,
+        "index must be less than NAIL_COUNT * (NAIL_COUNT - 1) / 2"
+    );
+
+    let mut a = 0;
+    while (NAIL_COUNT * (NAIL_COUNT - 1) / 2 - ((NAIL_COUNT - a) * ((NAIL_COUNT - a) - 1) / 2))
+        <= index
+    {
+        a += 1;
+    }
+    a -= 1;
+
+    let b = index + a + 1
+        - (NAIL_COUNT * (NAIL_COUNT - 1) / 2 - ((NAIL_COUNT - a) * ((NAIL_COUNT - a) - 1) / 2));
+
+    return (a, b);
+}
+
+#[wasm_bindgen]
+pub fn nail_index_to_x(nail_index: u16) -> u16 {
+    assert!(
+        nail_index < NAIL_COUNT,
+        "nail_index must be less than NAIL_COUNT"
+    );
+
+    let angle = (2.0 * PI * nail_index as f64) / NAIL_COUNT as f64;
+
+    return (RADIUS as f64 + RADIUS as f64 * angle.cos()) as u16;
+}
+
+#[wasm_bindgen]
+pub fn nail_index_to_y(nail_index: u16) -> u16 {
+    assert!(
+        nail_index < NAIL_COUNT,
+        "nail_index must be less than NAIL_COUNT"
+    );
+
+    let angle = (2.0 * PI * nail_index as f64) / NAIL_COUNT as f64;
+
+    return SIDE_LENGTH - 1 - (RADIUS as f64 + RADIUS as f64 * angle.sin()) as u16;
 }
 
 #[wasm_bindgen]
@@ -56,45 +114,30 @@ impl Disk {
         log!("Calculating lines...");
         for start in 0..NAIL_COUNT - 1 {
             for end in start + 1..NAIL_COUNT {
-                let start_angle = (2.0 * PI * start as f64) / NAIL_COUNT as f64;
+                let pixels = get_line_pixels(
+                    (nail_index_to_x(start), nail_index_to_y(start)),
+                    (nail_index_to_x(end), nail_index_to_y(end)),
+                );
 
-                let start_x = (RADIUS as f64 + RADIUS as f64 * start_angle.cos()) as u16;
-                let start_y = (RADIUS as f64 + RADIUS as f64 * start_angle.sin()) as u16;
-
-                let end_angle = (2.0 * PI * end as f64) / NAIL_COUNT as f64;
-
-                let end_x = (RADIUS as f64 + RADIUS as f64 * end_angle.cos()) as u16;
-                let end_y = (RADIUS as f64 + RADIUS as f64 * end_angle.sin()) as u16;
-
-                let pixels = get_line_pixels((start_x, start_y), (end_x, end_y));
-
-                lines.push(Line { start, end, pixels })
+                lines.push(pixels)
             }
         }
-        log!("{lines:?}");
 
         // Reshape vectors into 2D arrays with a single column and store them in a Vec
         log!("Building matrix...");
         let mut counter = 0;
         let columns: Vec<Array2<f64>> = lines
             .iter()
-            .map(|line| {
-                let mut pixels = Array2::zeros((PIXEL_COUNT as usize, 1));
+            .map(|pixels| {
+                let mut pixels_vector = Array2::zeros((PIXEL_COUNT as usize, 1));
 
                 counter += 1;
 
-                if counter % 1_000 == 0 {
-                    log!("{} / {}", counter, LINE_COUNT);
-                }
-
-                line.pixels.iter().for_each(|index| {
-                    if index > &PIXEL_COUNT {
-                        log!("Index out of bounds");
-                    }
-                    pixels[[*index as usize, 0]] = 255.0;
+                pixels.iter().for_each(|index| {
+                    pixels_vector[[*index as usize, 0]] = 100.0;
                 });
 
-                pixels
+                pixels_vector
             })
             .collect();
 
@@ -111,41 +154,66 @@ impl Disk {
         log!("Ready!");
 
         Disk {
-            num_points: NAIL_COUNT,
+            nail_count: NAIL_COUNT,
             radius: RADIUS,
-            drawn: Vec::new(),
+            strings: Vec::new(),
             image: vec![0; PIXEL_COUNT as usize],
-            lines,
             a,
             x,
         }
     }
 
-    pub fn get_num_points(&self) -> u16 {
-        self.num_points
+    pub fn get_nail_count(&self) -> u16 {
+        self.nail_count
     }
 
     pub fn get_radius(&self) -> u16 {
         self.radius
     }
 
-    pub fn size(&self) -> usize {
-        self.drawn.len() * 2 // each line is two points
+    pub fn lines_size(&self) -> usize {
+        self.strings.len() * 2 // each line is two points
     }
 
     pub fn lines(&self) -> *const (u16, u16) {
-        self.drawn.iter().cloned().collect::<Vec<_>>().as_ptr()
+        self.strings.iter().cloned().collect::<Vec<_>>().as_ptr()
+    }
+
+    pub fn image_size(&self) -> usize {
+        self.image.len() // each line is two points
+    }
+
+    pub fn image(&self) -> *const u8 {
+        self.image.iter().copied().collect::<Vec<_>>().as_ptr()
+    }
+
+    pub fn clear(&mut self) {
+        // Reset image
+        self.image = vec![0; PIXEL_COUNT as usize];
+
+        self.strings = Vec::new();
     }
 
     pub fn draw(&mut self, canvas_left: u16, canvas_top: u16) {
-        self.image[canvas_top as usize * (self.radius as usize * 2 + 1) + canvas_left as usize] =
-            255;
+        let thickness: i16 = 5;
+        // Draw a circle around this point
+        // Draw a square around the point with the size determined by the brush thickness
+        for i in -thickness..=thickness {
+            for j in -thickness..=thickness {
+                let x = canvas_left as i16 + i;
+                let y = canvas_top as i16 + j;
 
-        log!(
-            "Drawn index {} ",
-            canvas_top as usize * (self.radius as usize * 2 + 1) + canvas_left as usize
-        );
-        log!("Drawing...");
+                self.image[from_coordinates_to_pixel(x as u16, y as u16) as usize] = 255;
+            }
+        }
+    }
+
+    pub fn stringify(&mut self) {
+        // self.image.iter().enumerate().for_each(|(i, x)| {
+        //     if *x > 0 {
+        //         log!("{i} = {x} ");
+        //     }
+        // });
 
         let b: Array1<f64> = self
             .image
@@ -159,55 +227,72 @@ impl Disk {
         // GOAL
         let mut source_nail = 0;
 
-        let mut smallest_norm_squares = f64::MAX;
+        let mut done = HashSet::new();
+        let mut improvement = true;
 
-        loop {
+        while improvement {
+            improvement = false;
+
             // Find the line that minimizes the Euclidean difference the most
-            let mut smallest = f64::MAX;
-            let mut best_target_nail = 0;
-
             for target_nail in 0..NAIL_COUNT {
                 if target_nail == source_nail {
                     continue;
                 }
 
-                get_line_index(source_nail, target_nail);
-
-                let x_clone = self.x.clone();
-
-                // Calculate Ax
-                let ax = self.a.dot(&x_clone);
-
-                // Calculate Ax - b
-                let diff: Array1<f64> = &ax - &b;
-
-                // Calculate ||Ax - b||^2
-                let norm_squared = diff.dot(&diff);
-
-                if norm_squared < smallest {
-                    smallest = norm_squared;
-                    best_target_nail = target_nail;
-                    log!("{} {}", norm_squared, smallest);
+                if done.contains(&(source_nail, target_nail))
+                    || done.contains(&(target_nail, source_nail))
+                {
+                    continue;
                 }
-            }
 
-            if smallest < smallest_norm_squares {
-                smallest_norm_squares = smallest;
-                self.x[get_line_index(source_nail, best_target_nail) as usize] = 1.0;
-                source_nail = best_target_nail;
-            } else {
-                break;
+                let index = if source_nail > target_nail {
+                    from_nails_to_index(target_nail, source_nail)
+                } else {
+                    from_nails_to_index(source_nail, target_nail)
+                };
+
+                // Before: difference when not placing the string
+
+                let without_line = self.a.column(index as usize).map(|_| 1.0) * &b;
+                let without_line_dot = without_line.dot(&without_line);
+                let with_line = &self.a.column(index as usize) - &b;
+                let with_line_dot = with_line.dot(&with_line);
+
+                if with_line_dot < without_line_dot {
+                    done.insert((source_nail, target_nail));
+                    self.x[index as usize] = 1.0;
+                    log!("Adding!");
+                    self.strings.push((source_nail, target_nail));
+                    source_nail = target_nail;
+                    improvement = true;
+                    break;
+                } else {
+                }
+
+                // let mut x_clone = self.x.clone();
+
+                // // Set the line to 1
+                // x_clone[index as usize] = 1.0;
+
+                // // Calculate Ax
+                // let ax = self.a.dot(&x_clone);
+
+                // // Calculate Ax - b
+                // let diff: Array1<f64> = &ax - &b;
+
+                // // Calculate ||Ax - b||^2
+                // let norm_squared = diff.dot(&diff);
+
+                // if norm_squared < smallest {
+                //     // log!("NEW BEST: {}, index {index}", norm_squared);
+                //     smallest = norm_squared;
+                //     new_string = index;
+                //     best_target_nail = target_nail;
+                // }
             }
         }
 
-        // Update the lines
-        for line in &self.x {
-            if *line > 0.0 {
-                let (source_nail, target_nail) = from_line_index(*line as u16);
-
-                self.drawn.push((source_nail, target_nail));
-            }
-        }
+        self.image = vec![0; PIXEL_COUNT as usize];
     }
 }
 
@@ -228,7 +313,7 @@ pub fn get_line_pixels(start: (u16, u16), end: (u16, u16)) -> Vec<u32> {
     let mut err2;
 
     loop {
-        coordinates.push(x0 as u32 + y0 as u32 * (RADIUS * 2 + 1) as u32); //TODO check
+        coordinates.push(x0 as u32 + y0 as u32 * SIDE_LENGTH as u32); //TODO check
 
         if x0 == x1 && y0 == y1 {
             break;
