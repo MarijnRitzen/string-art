@@ -1,6 +1,6 @@
 mod utils;
 
-use std::f64;
+use std::{collections::HashMap, f64};
 extern crate js_sys;
 use line_drawing::{BresenhamCircle, XiaolinWu};
 use ndarray::Array1;
@@ -19,7 +19,6 @@ macro_rules! log {
 }
 #[wasm_bindgen]
 pub struct Disk {
-    // nail_count: u16,
     pixel_size: u32,
     radius: u32,
     strings: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
@@ -27,8 +26,7 @@ pub struct Disk {
     canvas: Vec<(i32, i32)>,
     filled_in: Vec<bool>,
     context: web_sys::CanvasRenderingContext2d,
-    // a: Array2<f32>,
-    // x: Array1<f64>,
+    index_hashmap: HashMap<(i32, i32), usize>,
 }
 
 #[wasm_bindgen]
@@ -50,6 +48,8 @@ impl Disk {
             .dyn_into::<web_sys::CanvasRenderingContext2d>()
             .unwrap();
 
+        context.set_global_alpha(0.3);
+
         canvas.set_width((RADIUS + PADDING + MARGIN) * 2);
         canvas.set_height((RADIUS + PADDING + MARGIN) * 2);
 
@@ -60,6 +60,7 @@ impl Disk {
             canvas: Vec::new(),
             filled_in: Vec::new(),
             nails: Vec::new(),
+            index_hashmap: HashMap::new(),
             context,
         };
 
@@ -116,15 +117,35 @@ impl Disk {
         self.context.stroke();
     }
 
+    pub fn draw_strings(&mut self) {
+        let pixel_size = self.pixel_size;
+
+        // Draw the strings.
+        for (start, end) in &self.strings {
+            self.context.begin_path();
+
+            let (start_x, start_y) = self.nails[*start as usize];
+            let (end_x, end_y) = self.nails[*end as usize];
+            self.context.move_to(
+                (start_x as u32 * pixel_size + MARGIN) as f64,
+                (start_y as u32 * pixel_size + MARGIN) as f64,
+            ); // Move the pen to the starting point
+            self.context.line_to(
+                (end_x as u32 * pixel_size + MARGIN) as f64,
+                (end_y as u32 * pixel_size + MARGIN) as f64,
+            ); // Draw a line to the ending point
+
+            self.context.stroke();
+            self.context.close_path();
+        }
+    }
+
     pub fn draw(&mut self, canvas_left: u32, canvas_top: u32) {
-        log!("draw({:?}, {:?})", canvas_left, canvas_top);
-        // TODO: speed upo
-        for (i, (x, y)) in self.canvas.iter().enumerate() {
-            if *x as u32 == (canvas_left - PADDING) / self.pixel_size
-                && *y as u32 == (canvas_top - PADDING) / self.pixel_size
-            {
-                self.filled_in[i] = true;
-            }
+        let x = (canvas_left - PADDING) / self.pixel_size;
+        let y = (canvas_top - PADDING) / self.pixel_size;
+
+        if let Some(index) = self.index_hashmap.get(&(x as i32, y as i32)) {
+            self.filled_in[*index] = true;
         }
     }
 
@@ -144,21 +165,28 @@ impl Disk {
         .collect::<Vec<_>>();
 
         let mut canvas = Vec::new();
+        let mut index_hashmap = HashMap::new();
 
         // Sort the outer edge by y coordinate and then by x coordinate
         outer_edge.sort_by_key(|(x, _)| *x);
         outer_edge.sort_by_key(|(_, y)| *y);
+
+        let mut index = 0;
 
         for window in outer_edge.windows(2) {
             let (x0, y0) = window[0];
             let (x1, y1) = window[1];
 
             canvas.push((x0, y0));
+            index_hashmap.insert((x0, y0), index);
+            index += 1;
 
             if y0 == y1 && x0 < x1 - 1 {
                 // Fill in the gap
                 for x in x0 + 1..x1 {
                     canvas.push((x, y0));
+                    index_hashmap.insert((x, y0), index);
+                    index += 1;
                 }
             }
         }
@@ -166,10 +194,12 @@ impl Disk {
         canvas.push(*outer_edge.last().unwrap());
 
         self.canvas = canvas.into_iter().map(|(x, y)| (x, y)).collect();
+        self.index_hashmap = index_hashmap;
         self.filled_in.resize(self.canvas.len(), false);
     }
 
-    pub fn stringify(&mut self) {
+    pub fn calculate_strings(&mut self) {
+        self.clear();
         // let x: Array1<f64> = Array1::zeros(LINE_COUNT as );
         let b: Array1<f32> = self
             .filled_in
@@ -178,15 +208,14 @@ impl Disk {
             .collect::<Vec<_>>()
             .into();
 
-        self.clear();
+        self.reset();
 
-        let mut highest = 0.0;
         for start in 0..self.nails.len() - 1 {
             for end in start + 1..self.nails.len() {
                 let (start_x, start_y) = self.nails[start as usize];
                 let (end_x, end_y) = self.nails[end as usize];
 
-                let values = XiaolinWu::<f32, i16>::new(
+                let values = XiaolinWu::<f32, i32>::new(
                     (start_x as f32, start_y as f32),
                     (end_x as f32, end_y as f32),
                 )
@@ -195,13 +224,9 @@ impl Disk {
                 let mut string = Array1::zeros(self.canvas.len());
 
                 for ((x, y), value) in values {
-                    if let Some(index) = self
-                        .canvas
-                        .iter()
-                        .position(|(x0, y0)| *x0 == x as i32 && *y0 == y as i32)
-                    {
-                        string[index as usize] = value * 175.0;
-                    }
+                    if let Some(index) = self.index_hashmap.get(&(x, y)) {
+                        string[*index] = value * 175.0;
+                    };
                 }
 
                 let bitmap = string.map(|v| if *v > 0.0 { 1.0 } else { 0.0 });
@@ -218,32 +243,45 @@ impl Disk {
                 let diff = &string - &interesting_pixels;
                 let with_line = diff.dot(&diff);
 
-                if without_line > highest {
-                    highest = without_line;
-                }
+                let pixel_size = self.pixel_size;
 
                 if with_line < without_line {
-                    // done.insert(start, end);
+                    // Draw the string
                     self.strings.push((start as u16, end as u16));
+
+                    self.context.begin_path();
+
+                    self.context.move_to(
+                        (start_x as u32 * pixel_size + MARGIN) as f64,
+                        (start_y as u32 * pixel_size + MARGIN) as f64,
+                    ); // Move the pen to the starting point
+                    self.context.line_to(
+                        (end_x as u32 * pixel_size + MARGIN) as f64,
+                        (end_y as u32 * pixel_size + MARGIN) as f64,
+                    ); // Draw a line to the ending point
+
+                    self.context.stroke();
+                    self.context.close_path();
                 }
             }
         }
     }
 
     pub fn clear(&mut self) {
-        // self.filled_in = vec![false; self.canvas.len()];
+        self.context.clear_rect(
+            0.0,
+            0.0,
+            (RADIUS + PADDING + MARGIN) as f64 * 2.0,
+            (RADIUS + PADDING + MARGIN) as f64 * 2.0,
+        );
+    }
+
+    pub fn reset(&mut self) {
+        self.filled_in = vec![false; self.canvas.len()];
         self.strings = Vec::new();
     }
 
     // Getters and setters
-
-    // pub fn get_nail_count(&self) -> u16 {
-    //     self.nail_count
-    // }
-
-    // pub fn set_nail_count(&mut self, count: u16) {
-    //     self.nail_count = count;
-    // }
 
     pub fn get_pixel_size(&self) -> u32 {
         self.pixel_size

@@ -45,8 +45,8 @@ const drawStrings = () => {
     // Draw point on the disk
     ctx.lineWidth = 0.5;
     ctx.beginPath();
-    ctx.moveTo(start_x * pixel_size + BUFFER, start_y * pixel_size + BUFFER); // Move the pen to the starting point
-    ctx.lineTo(end_x * pixel_size + BUFFER, end_y * pixel_size + BUFFER); // Draw a line to the ending point
+    ctx.moveTo(start_x * pixel_size + MARGIN, start_y * pixel_size + MARGIN); // Move the pen to the starting point
+    ctx.lineTo(end_x * pixel_size + MARGIN, end_y * pixel_size + MARGIN); // Draw a line to the ending point
     ctx.stroke(); // Render the line
   }
 };
@@ -74,6 +74,26 @@ canvas.addEventListener("mouseup", () => {
   drawing = false; // stop drawing when the mouse is released
 });
 
+canvas.addEventListener("touchstart", (event) => {
+  if (!drawMode) return;
+
+  drawing = true; // start drawing when the touch is started
+  draw(event.touches[0]); // draw immediately when the touch is started
+});
+
+canvas.addEventListener("touchmove", (event) => {
+  if (!drawMode) return;
+
+  if (!drawing) return; // stop here if we're not drawing
+  draw(event.touches[0]); // draw when touch is moved
+});
+
+canvas.addEventListener("touchend", () => {
+  if (!drawMode) return;
+
+  drawing = false; // stop drawing when the touch ends
+});
+
 const drawModeButton = document.getElementById("draw-mode-button");
 
 let drawMode = true;
@@ -86,15 +106,12 @@ const activateDrawMode = () => {
 };
 
 const clear = () => {
+  disk.reset();
   disk.clear();
-  // Clear the entire canvas
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
 };
 
 const activateStringMode = () => {
-  // Clear the entire canvas
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  disk.stringify();
+  disk.calculate_strings();
   drawModeButton.textContent = "reset";
   drawMode = false;
 };
@@ -130,16 +147,17 @@ function draw(event) {
 
 // Initialize the canvas with the disk
 const renderLoop = () => {
+  disk.clear();
   disk.draw_nails();
   disk.draw_canvas();
-  drawStrings();
+  disk.draw_strings();
 
   requestAnimationFrame(renderLoop);
 };
 
 disk.draw_nails();
 disk.draw_canvas();
-drawStrings();
+disk.draw_strings();
 renderLoop();
 
 const pixelSizeSlider = document.getElementById("pixel-size");
