@@ -1,14 +1,15 @@
 mod utils;
 
+use std::f64;
 extern crate js_sys;
 use line_drawing::{BresenhamCircle, XiaolinWu};
 use ndarray::Array1;
 use wasm_bindgen::prelude::*;
 
-const RADIUS: u16 = 300;
-const PADDING: u16 = 3;
-const STARTING_PIXEL_SIZE: u16 = 16;
-const SIDE_LENGTH: u16 = RADIUS * 2 + 2;
+const RADIUS: u32 = 256;
+const MARGIN: u32 = 16;
+const PADDING: u32 = 16;
+const STARTING_PIXEL_SIZE: u32 = 8;
 
 // A macro to provide `println!(..)`-style syntax for `console.log` logging.
 macro_rules! log {
@@ -16,35 +17,16 @@ macro_rules! log {
         web_sys::console::log_1(&format!( $( $t )* ).into());
     }
 }
-
-pub fn from_coordinates_to_pixel(x: u16, y: u16) -> u16 {
-    assert!(x < SIDE_LENGTH, "x must be less than SIDE_LENGTH");
-    assert!(y < SIDE_LENGTH, "y must be less than SIDE_LENGTH");
-
-    return y * SIDE_LENGTH + x;
-}
-
-pub fn from_pixel_to_coordinates(pixel: u32) -> (u32, u32) {
-    // assert!(
-    //     pixel < PIXEL_COUNT,
-    //     "pixel must be less than PIXEL_COUNT = SIDE_LENGTH * SIDE_LENGTH"
-    // );
-
-    return (
-        pixel % (RADIUS as u32 * 2 + 1),
-        pixel / (RADIUS as u32 * 2 + 1),
-    );
-}
-
 #[wasm_bindgen]
 pub struct Disk {
     // nail_count: u16,
-    pixel_size: u16,
-    radius: u16,
+    pixel_size: u32,
+    radius: u32,
     strings: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
     nails: Vec<(i32, i32)>,
     canvas: Vec<(i32, i32)>,
     filled_in: Vec<bool>,
+    context: web_sys::CanvasRenderingContext2d,
     // a: Array2<f32>,
     // x: Array1<f64>,
 }
@@ -54,32 +36,106 @@ impl Disk {
     pub fn new() -> Disk {
         utils::set_panic_hook();
 
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas = document.get_element_by_id("string-art-canvas").unwrap();
+        let canvas: web_sys::HtmlCanvasElement = canvas
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .map_err(|_| ())
+            .unwrap();
+
+        let context = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<web_sys::CanvasRenderingContext2d>()
+            .unwrap();
+
+        canvas.set_width((RADIUS + PADDING + MARGIN) * 2);
+        canvas.set_height((RADIUS + PADDING + MARGIN) * 2);
+
         let mut disk = Disk {
             pixel_size: STARTING_PIXEL_SIZE,
             radius: RADIUS,
             strings: Vec::new(),
             canvas: Vec::new(),
             filled_in: Vec::new(),
-            nails: Vec::new(), // a,
+            nails: Vec::new(),
+            context,
         };
 
-        disk.set_nails();
-        disk.set_canvas();
+        disk.resize();
+        disk.draw_nails();
+        disk.draw_canvas();
         disk.clear();
 
         disk
     }
 
-    fn set_nails(&mut self) {
-        self.nails = BresenhamCircle::new(
-            (RADIUS / self.pixel_size) as i32,
-            (RADIUS / self.pixel_size) as i32,
-            (RADIUS / self.pixel_size) as i32 + PADDING as i32,
-        )
-        .collect::<Vec<_>>();
+    pub fn draw_nails(&mut self) {
+        for (x, y) in BresenhamCircle::new(
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+        ) {
+            // Draw the nail.
+            self.context.begin_path();
+
+            self.context
+                .arc(
+                    (x as u32 * self.pixel_size + MARGIN) as f64,
+                    (y as u32 * self.pixel_size + MARGIN) as f64,
+                    1.0,
+                    0.0,
+                    2.0 * f64::consts::PI,
+                )
+                .unwrap();
+
+            self.context.fill();
+
+            self.context.close_path();
+        }
     }
 
-    fn set_canvas(&mut self) {
+    pub fn draw_canvas(&mut self) {
+        // Draw the canvas.
+        for (index, filled_in) in self.filled_in.iter().enumerate() {
+            if !*filled_in {
+                continue;
+            }
+
+            let (x, y) = self.canvas[index];
+
+            self.context.fill_rect(
+                (x as u32 * self.pixel_size + MARGIN) as f64,
+                (y as u32 * self.pixel_size + MARGIN) as f64,
+                self.pixel_size as f64,
+                self.pixel_size as f64,
+            );
+        }
+
+        self.context.stroke();
+    }
+
+    pub fn draw(&mut self, canvas_left: u32, canvas_top: u32) {
+        log!("draw({:?}, {:?})", canvas_left, canvas_top);
+        // TODO: speed upo
+        for (i, (x, y)) in self.canvas.iter().enumerate() {
+            if *x as u32 == (canvas_left - PADDING) / self.pixel_size
+                && *y as u32 == (canvas_top - PADDING) / self.pixel_size
+            {
+                self.filled_in[i] = true;
+            }
+        }
+    }
+
+    pub fn resize(&mut self) {
+        self.nails = BresenhamCircle::new(
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+            ((RADIUS + PADDING) / self.pixel_size) as i32,
+        )
+        .collect();
+
         let mut outer_edge = BresenhamCircle::new(
             (RADIUS / self.pixel_size) as i32,
             (RADIUS / self.pixel_size) as i32,
@@ -110,22 +166,11 @@ impl Disk {
         canvas.push(*outer_edge.last().unwrap());
 
         self.canvas = canvas.into_iter().map(|(x, y)| (x, y)).collect();
-
-        self.filled_in.resize(self.canvas.len(), false)
-    }
-
-    pub fn draw(&mut self, canvas_left: u16, canvas_top: u16) {
-        for (i, (x, y)) in self.canvas.iter().enumerate() {
-            if *x as u16 == canvas_left / self.pixel_size
-                && *y as u16 == canvas_top / self.pixel_size
-            {
-                self.filled_in[i] = true;
-            }
-        }
+        self.filled_in.resize(self.canvas.len(), false);
     }
 
     pub fn stringify(&mut self) {
-        // let x: Array1<f64> = Array1::zeros(LINE_COUNT as usize);
+        // let x: Array1<f64> = Array1::zeros(LINE_COUNT as );
         let b: Array1<f32> = self
             .filled_in
             .iter()
@@ -186,7 +231,7 @@ impl Disk {
     }
 
     pub fn clear(&mut self) {
-        self.filled_in = vec![false; self.canvas.len()];
+        // self.filled_in = vec![false; self.canvas.len()];
         self.strings = Vec::new();
     }
 
@@ -200,17 +245,16 @@ impl Disk {
     //     self.nail_count = count;
     // }
 
-    pub fn get_pixel_size(&self) -> u16 {
+    pub fn get_pixel_size(&self) -> u32 {
         self.pixel_size
     }
 
-    pub fn set_pixel_size(&mut self, size: u16) {
+    pub fn set_pixel_size(&mut self, size: u32) {
         self.pixel_size = size;
-        self.set_nails();
-        self.set_canvas();
+        self.resize();
     }
 
-    pub fn get_radius(&self) -> u16 {
+    pub fn get_radius(&self) -> u32 {
         self.radius
     }
 
