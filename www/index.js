@@ -5,53 +5,6 @@ import { memory } from "wasm-string-art/string_art_bg";
 
 const disk = Disk.new();
 
-const canvas = document.getElementById("string-art-canvas");
-
-const ctx = canvas.getContext("2d");
-
-const MARGIN = 16;
-const PADDING = 16;
-
-var centerX = disk.get_radius() + MARGIN + PADDING;
-var centerY = disk.get_radius() + MARGIN + PADDING;
-var radius = disk.get_radius();
-
-const drawStrings = () => {
-  const nailsArray = new Int32Array(
-    memory.buffer,
-    disk.nails(),
-    disk.nails_size()
-  );
-
-  const strings = new Uint16Array(
-    memory.buffer,
-    disk.strings(),
-    disk.strings_size()
-  );
-
-  let pixel_size = disk.get_pixel_size();
-  ctx.globalAlpha = 0.5;
-
-  for (let i = 0; i < disk.strings_size(); i = i + 2) {
-    let start_index = strings[i];
-    let end_index = strings[i + 1];
-
-    let start_x = nailsArray[2 * start_index];
-    let start_y = nailsArray[2 * start_index + 1];
-
-    let end_x = nailsArray[2 * end_index];
-    let end_y = nailsArray[2 * end_index + 1];
-
-    // Draw point on the disk
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(start_x * pixel_size + MARGIN, start_y * pixel_size + MARGIN); // Move the pen to the starting point
-    ctx.lineTo(end_x * pixel_size + MARGIN, end_y * pixel_size + MARGIN); // Draw a line to the ending point
-    ctx.stroke(); // Render the line
-  }
-};
-
-// Drawing
 let drawing = false;
 
 canvas.addEventListener("mousedown", (event) => {
