@@ -1,6 +1,10 @@
 mod utils;
 
-use std::{collections::HashMap, f64};
+use std::{
+    collections::{HashMap, HashSet},
+    f64,
+    iter::FromIterator,
+};
 extern crate js_sys;
 use line_drawing::{BresenhamCircle, XiaolinWu};
 use ndarray::{array, Array1};
@@ -8,7 +12,7 @@ use wasm_bindgen::prelude::*;
 
 const RADIUS: u32 = 512;
 const MARGIN: u32 = 16;
-const PADDING: u32 = 16;
+const PADDING: u32 = 48;
 const STARTING_PIXEL_SIZE: u32 = 16;
 
 // A macro to provide `println!(..)`-style syntax for `console.log` logging.
@@ -27,7 +31,7 @@ pub struct Disk {
     image: Vec<u8>,
     context: web_sys::CanvasRenderingContext2d,
     index_hashmap: HashMap<(i32, i32), usize>,
-    strings_iteration: usize,
+    last_nail: usize,
     b: Array1<f32>,
     drawing_strings: bool,
 }
@@ -65,7 +69,7 @@ impl Disk {
             nails: Vec::new(),
             index_hashmap: HashMap::new(),
             context,
-            strings_iteration: 0,
+            last_nail: 0,
             b: array![],
             drawing_strings: false,
         };
@@ -74,6 +78,7 @@ impl Disk {
         disk.draw_nails();
         disk.draw_canvas();
         disk.clear();
+        let mut start = (js_sys::Math::random() * disk.nails.len() as f64) as usize;
 
         disk
     }
@@ -86,6 +91,8 @@ impl Disk {
         ) {
             // Draw the nail.
             self.context.begin_path();
+
+            self.context.set_fill_style(&"black".into());
 
             self.context
                 .arc(
@@ -104,6 +111,10 @@ impl Disk {
     }
 
     pub fn draw_canvas(&mut self) {
+        if self.drawing_strings {
+            return;
+        }
+
         self.context.set_global_alpha(1.0);
         // Draw the canvas.
         for (index, pixel) in self.image.iter().enumerate() {
@@ -112,7 +123,12 @@ impl Disk {
             self.context.begin_path();
 
             // Set the fill style to a grayscale color based on the pixel value
-            let color = format!("rgb({}, {}, {})", pixel, pixel, pixel);
+            let color = format!(
+                "rgb({}, {}, {})",
+                (255 - pixel),
+                (255 - pixel),
+                (255 - pixel)
+            );
             self.context.set_fill_style(&color.into());
 
             self.context.fill_rect(
@@ -191,28 +207,94 @@ impl Disk {
             return;
         }
 
-        if self.strings_iteration == 0 {
+        if self.strings.len() == 0 {
             // First iteration initiated by pressing the "Stringify" button in the frontend
             self.b = self
                 .image
                 .iter()
-                .map(|b| 255.0 - *b as f32)
+                .map(|b| *b as f32 / 255.0) // 0 if white, 1 if black
                 .collect::<Vec<_>>()
                 .into();
 
-            self.image = vec![255; self.canvas.len()];
+            self.image = vec![0; self.canvas.len()];
         }
-
-        // Draw the strings we have up to now (might be all of them)
-        let pixel_size = self.pixel_size;
 
         self.context.set_global_alpha(0.3);
 
-        for (start, end) in &self.strings {
+        let set: HashSet<(u16, u16)> = HashSet::from_iter(self.strings.iter().copied());
+
+        // Draw 100 lines
+        for _ in 0..20 {
+            let (start_x, start_y) = self.nails[self.last_nail];
+
+            let mut best = f32::MIN;
+            let mut best_string = array![];
+            let mut best_end = self.last_nail;
+
+            for end in 0..self.nails.len() {
+                if end == self.last_nail
+                    || set.contains(&(self.last_nail as u16, end as u16))
+                    || set.contains(&(end as u16, self.last_nail as u16))
+                {
+                    continue;
+                }
+
+                let (end_x, end_y) = self.nails[end as usize];
+
+                let values = XiaolinWu::<f32, i32>::new(
+                    (start_x as f32, start_y as f32),
+                    (end_x as f32, end_y as f32),
+                )
+                .collect::<Vec<_>>();
+
+                let mut string: Array1<f32> = Array1::zeros(self.canvas.len());
+
+                for ((x, y), value) in values {
+                    if let Some(index) = self.index_hashmap.get(&(x, y)) {
+                        string[*index] = 0.0065 * value;
+                    };
+                }
+
+                let bitmap = string.map(|v| if *v > 0.0 { 1.0 } else { 0.0 }); // Everywhere where it is not white
+
+                assert_eq!(bitmap.len(), self.canvas.len());
+                assert_eq!(self.b.len(), self.canvas.len());
+
+                let interesting_pixels = &bitmap * &self.b;
+
+                // When no line is drawn
+                let without_line = interesting_pixels.dot(&interesting_pixels);
+
+                // When the line is drawn
+                let diff = &interesting_pixels - &string;
+                let with_line = diff.dot(&diff);
+
+                let improvement = without_line - with_line;
+
+                if improvement > 0.0 && improvement > best {
+                    best = improvement;
+                    best_string = string;
+                    best_end = end;
+                }
+            }
+
+            if best == f32::MIN {
+                self.drawing_strings = false;
+                break;
+            }
+
+            // Update image because we drew a line
+            // log!("{:?}", &best_string.shape());
+            self.b = &self.b - &best_string;
+
+            // Draw the string
+            let pixel_size = self.pixel_size;
+
+            self.strings.push((self.last_nail as u16, best_end as u16));
+            let (end_x, end_y) = self.nails[best_end as usize];
+
             self.context.begin_path();
 
-            let (start_x, start_y) = self.nails[*start as usize];
-            let (end_x, end_y) = self.nails[*end as usize];
             self.context.move_to(
                 (start_x as u32 * pixel_size + MARGIN) as f64,
                 (start_y as u32 * pixel_size + MARGIN) as f64,
@@ -224,72 +306,8 @@ impl Disk {
 
             self.context.stroke();
             self.context.close_path();
+            self.last_nail = best_end;
         }
-
-        // self.reset();
-
-        // If we are done we can return, otherwise we must do some work still, namely every string from nail at index iteration
-        if self.strings_iteration == self.nails.len() {
-            return;
-        }
-
-        for end in self.strings_iteration + 1..self.nails.len() {
-            let (start_x, start_y) = self.nails[self.strings_iteration as usize];
-            let (end_x, end_y) = self.nails[end as usize];
-
-            let values = XiaolinWu::<f32, i32>::new(
-                (start_x as f32, start_y as f32),
-                (end_x as f32, end_y as f32),
-            )
-            .collect::<Vec<_>>();
-
-            let mut string = Array1::zeros(self.canvas.len());
-
-            for ((x, y), value) in values {
-                if let Some(index) = self.index_hashmap.get(&(x, y)) {
-                    string[*index] = value * 255.0;
-                };
-            }
-
-            let bitmap = string.map(|v| if *v > 0.0 { 1.0 } else { 0.0 });
-
-            assert_eq!(bitmap.len(), self.canvas.len());
-            assert_eq!(self.b.len(), self.canvas.len());
-
-            let interesting_pixels = bitmap * &self.b;
-
-            // When no line is drawn
-            let without_line = interesting_pixels.dot(&interesting_pixels);
-
-            // When the line is drawn
-            let diff = &string - &interesting_pixels;
-            let with_line = diff.dot(&diff);
-
-            let pixel_size = self.pixel_size;
-
-            if with_line < without_line {
-                self.b = &self.b - 0.01 * &string;
-
-                // Draw the string
-                self.strings
-                    .push((self.strings_iteration as u16, end as u16));
-
-                self.context.begin_path();
-
-                self.context.move_to(
-                    (start_x as u32 * pixel_size + MARGIN) as f64,
-                    (start_y as u32 * pixel_size + MARGIN) as f64,
-                ); // Move the pen to the starting point
-                self.context.line_to(
-                    (end_x as u32 * pixel_size + MARGIN) as f64,
-                    (end_y as u32 * pixel_size + MARGIN) as f64,
-                ); // Draw a line to the ending point
-
-                self.context.stroke();
-                self.context.close_path();
-            }
-        }
-        self.strings_iteration += 1;
     }
 
     pub fn initialize_drawing_strings(&mut self) {
@@ -308,7 +326,7 @@ impl Disk {
     pub fn reset(&mut self) {
         self.image = vec![255; self.canvas.len()];
         self.strings = Vec::new();
-        self.strings_iteration = 0;
+        self.last_nail = 0;
         self.drawing_strings = false;
     }
 
@@ -327,7 +345,7 @@ impl Disk {
         self.radius + PADDING + MARGIN
     }
 
-    pub fn process_pixels(&mut self, pixels: &[u8]) {
+    pub fn process_pixels(&mut self, pixels: &[f64]) {
         assert_eq!(
             pixels.len(),
             (2 * RADIUS / STARTING_PIXEL_SIZE * 2 * RADIUS / STARTING_PIXEL_SIZE) as usize
@@ -338,7 +356,7 @@ impl Disk {
             let y = index / (2 * RADIUS / STARTING_PIXEL_SIZE) as usize;
 
             if let Some(index) = self.index_hashmap.get(&(x as i32, y as i32)) {
-                self.image[*index] = *pixel;
+                self.image[*index] = (*pixel * 255.0) as u8; // Still 0 if white, 255 if black
             }
         }
     }

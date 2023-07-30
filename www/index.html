@@ -2,9 +2,11 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Hello wasm-pack!</title>
+    <title>String art drawer</title>
     <style>
       body {
+        margin-top: 2vh;
+        margin-bottom: 2vh;
         position: absolute;
         top: 0;
         left: 0;
@@ -15,12 +17,32 @@
         align-items: center;
         justify-content: center;
       }
+
+      button {
+        display: inline-block;
+        padding: 10px 20px;
+        font-size: 14px;
+        border: none;
+        border-radius: 3px;
+        color: #ffffff;
+        background: black;
+        text-decoration: none;
+      }
+
+      button:hover {
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+      }
+
+      button:focus {
+        outline: none;
+      }
     </style>
   </head>
   <body>
-    <canvas id="image"></canvas>
-    <button id="new-image">New image</button>
-    <button id="image-mode-button">Stringify</button>
+    <div>
+      <button id="new-image">New image</button>
+      <button id="image-mode-button">Stringify</button>
+    </div>
 
     <canvas id="string-art-canvas"></canvas>
     <script src="./bootstrap.js"></script>

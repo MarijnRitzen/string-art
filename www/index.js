@@ -32,23 +32,15 @@ function getNewImage() {
         let imgData = context.getImageData(0, 0, canvas.width, canvas.height);
         let pixels = imgData.data;
 
+        let pixelValues = [];
         for (let i = 0; i < pixels.length; i += 4) {
           let grayscale =
             0.3 * pixels[i] + 0.59 * pixels[i + 1] + 0.11 * pixels[i + 2];
 
-          pixels[i] = grayscale; // red
-          pixels[i + 1] = grayscale; // green
-          pixels[i + 2] = grayscale; // blue
+          pixelValues.push(1 - grayscale / 255.0); // just use one channel as they are all the same
         }
 
-        context.putImageData(imgData, 0, 0);
-
-        let pixelValues = [];
-        for (let i = 0; i < pixels.length; i += 4) {
-          pixelValues.push(pixels[i]); // just use one channel as they are all the same
-        }
-
-        let pixelArray = new Uint8Array(pixelValues);
+        let pixelArray = new Float64Array(pixelValues);
 
         disk.process_pixels(pixelArray);
         disk.draw_nails();
@@ -72,6 +64,7 @@ const activateImageMode = () => {
   getNewImage();
   imageModeButton.textContent = "stringify";
   imageMode = true;
+  newImageButton.style.display = "inline-block";
 };
 
 const clear = () => {
@@ -79,10 +72,16 @@ const clear = () => {
   disk.clear();
 };
 
+let canvas = document.getElementById("string-art-canvas");
+let ctx = canvas.getContext("2d");
+
 const activateStringMode = () => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   disk.initialize_drawing_strings();
   imageModeButton.textContent = "reset";
   imageMode = false;
+  newImageButton.style.display = "none";
+
   renderLoop();
 };
 imageModeButton.addEventListener("click", (event) => {
@@ -95,12 +94,15 @@ imageModeButton.addEventListener("click", (event) => {
 
 // Initialize the canvas with the disk
 const renderLoop = () => {
-  disk.clear();
-  disk.draw_nails();
-  disk.draw_canvas();
+  // disk.clear();
+  // disk.draw_nails();
+  // disk.draw_canvas();
   disk.draw_strings();
 
   requestAnimationFrame(renderLoop);
 };
 
+disk.draw_nails();
+disk.draw_canvas();
+disk.draw_strings();
 getNewImage();
