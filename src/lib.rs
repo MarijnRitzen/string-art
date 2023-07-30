@@ -3,7 +3,7 @@ mod utils;
 use std::{collections::HashMap, f64};
 extern crate js_sys;
 use line_drawing::{BresenhamCircle, XiaolinWu};
-use ndarray::Array1;
+use ndarray::{array, Array1, Array2};
 use wasm_bindgen::prelude::*;
 
 const RADIUS: u32 = 256;
@@ -27,6 +27,9 @@ pub struct Disk {
     filled_in: Vec<bool>,
     context: web_sys::CanvasRenderingContext2d,
     index_hashmap: HashMap<(i32, i32), usize>,
+    strings_iteration: usize,
+    b: Array1<f32>,
+    drawing_strings: bool,
 }
 
 #[wasm_bindgen]
@@ -41,6 +44,9 @@ impl Disk {
             .map_err(|_| ())
             .unwrap();
 
+        canvas.set_width((RADIUS + PADDING + MARGIN) * 2);
+        canvas.set_height((RADIUS + PADDING + MARGIN) * 2);
+
         let context = canvas
             .get_context("2d")
             .unwrap()
@@ -49,9 +55,6 @@ impl Disk {
             .unwrap();
 
         context.set_global_alpha(0.3);
-
-        canvas.set_width((RADIUS + PADDING + MARGIN) * 2);
-        canvas.set_height((RADIUS + PADDING + MARGIN) * 2);
 
         let mut disk = Disk {
             pixel_size: STARTING_PIXEL_SIZE,
@@ -62,6 +65,9 @@ impl Disk {
             nails: Vec::new(),
             index_hashmap: HashMap::new(),
             context,
+            strings_iteration: 0,
+            b: array![],
+            drawing_strings: false,
         };
 
         disk.resize();
@@ -106,37 +112,18 @@ impl Disk {
 
             let (x, y) = self.canvas[index];
 
+            self.context.begin_path();
+
             self.context.fill_rect(
                 (x as u32 * self.pixel_size + MARGIN) as f64,
                 (y as u32 * self.pixel_size + MARGIN) as f64,
                 self.pixel_size as f64,
                 self.pixel_size as f64,
             );
-        }
 
-        self.context.stroke();
-    }
-
-    pub fn draw_strings(&mut self) {
-        let pixel_size = self.pixel_size;
-
-        // Draw the strings.
-        for (start, end) in &self.strings {
-            self.context.begin_path();
-
-            let (start_x, start_y) = self.nails[*start as usize];
-            let (end_x, end_y) = self.nails[*end as usize];
-            self.context.move_to(
-                (start_x as u32 * pixel_size + MARGIN) as f64,
-                (start_y as u32 * pixel_size + MARGIN) as f64,
-            ); // Move the pen to the starting point
-            self.context.line_to(
-                (end_x as u32 * pixel_size + MARGIN) as f64,
-                (end_y as u32 * pixel_size + MARGIN) as f64,
-            ); // Draw a line to the ending point
+            self.context.close_path();
 
             self.context.stroke();
-            self.context.close_path();
         }
     }
 
@@ -198,73 +185,111 @@ impl Disk {
         self.filled_in.resize(self.canvas.len(), false);
     }
 
-    pub fn calculate_strings(&mut self) {
-        self.clear();
-        // let x: Array1<f64> = Array1::zeros(LINE_COUNT as );
-        let b: Array1<f32> = self
-            .filled_in
-            .iter()
-            .map(|b| if *b { 255.0 } else { 0.0 })
-            .collect::<Vec<_>>()
-            .into();
+    pub fn draw_strings(&mut self) {
+        if !self.drawing_strings {
+            return;
+        }
 
-        self.reset();
+        if self.strings_iteration == 0 {
+            // First iteration initiated by pressing the "Stringify" button in the frontend
+            self.b = self
+                .filled_in
+                .iter()
+                .map(|b| if *b { 255.0 } else { 0.0 })
+                .collect::<Vec<_>>()
+                .into();
 
-        for start in 0..self.nails.len() - 1 {
-            for end in start + 1..self.nails.len() {
-                let (start_x, start_y) = self.nails[start as usize];
-                let (end_x, end_y) = self.nails[end as usize];
+            self.filled_in = vec![false; self.canvas.len()];
+        }
 
-                let values = XiaolinWu::<f32, i32>::new(
-                    (start_x as f32, start_y as f32),
-                    (end_x as f32, end_y as f32),
-                )
-                .collect::<Vec<_>>();
+        // Draw the strings we have up to now (might be all of them)
+        let pixel_size = self.pixel_size;
 
-                let mut string = Array1::zeros(self.canvas.len());
+        for (start, end) in &self.strings {
+            self.context.begin_path();
 
-                for ((x, y), value) in values {
-                    if let Some(index) = self.index_hashmap.get(&(x, y)) {
-                        string[*index] = value * 175.0;
-                    };
-                }
+            let (start_x, start_y) = self.nails[*start as usize];
+            let (end_x, end_y) = self.nails[*end as usize];
+            self.context.move_to(
+                (start_x as u32 * pixel_size + MARGIN) as f64,
+                (start_y as u32 * pixel_size + MARGIN) as f64,
+            ); // Move the pen to the starting point
+            self.context.line_to(
+                (end_x as u32 * pixel_size + MARGIN) as f64,
+                (end_y as u32 * pixel_size + MARGIN) as f64,
+            ); // Draw a line to the ending point
 
-                let bitmap = string.map(|v| if *v > 0.0 { 1.0 } else { 0.0 });
+            self.context.stroke();
+            self.context.close_path();
+        }
 
-                assert_eq!(bitmap.len(), self.canvas.len());
-                assert_eq!(b.len(), self.canvas.len());
+        // self.reset();
 
-                let interesting_pixels = bitmap * &b;
+        // If we are done we can return, otherwise we must do some work still, namely every string from nail at index iteration
+        if self.strings_iteration == self.nails.len() {
+            return;
+        }
 
-                // When no line is drawn
-                let without_line = interesting_pixels.dot(&interesting_pixels);
+        for end in self.strings_iteration + 1..self.nails.len() {
+            let (start_x, start_y) = self.nails[self.strings_iteration as usize];
+            let (end_x, end_y) = self.nails[end as usize];
 
-                // When the line is drawn
-                let diff = &string - &interesting_pixels;
-                let with_line = diff.dot(&diff);
+            let values = XiaolinWu::<f32, i32>::new(
+                (start_x as f32, start_y as f32),
+                (end_x as f32, end_y as f32),
+            )
+            .collect::<Vec<_>>();
 
-                let pixel_size = self.pixel_size;
+            let mut string = Array1::zeros(self.canvas.len());
 
-                if with_line < without_line {
-                    // Draw the string
-                    self.strings.push((start as u16, end as u16));
+            for ((x, y), value) in values {
+                if let Some(index) = self.index_hashmap.get(&(x, y)) {
+                    string[*index] = value * 125.0;
+                };
+            }
 
-                    self.context.begin_path();
+            let bitmap = string.map(|v| if *v > 0.0 { 1.0 } else { 0.0 });
 
-                    self.context.move_to(
-                        (start_x as u32 * pixel_size + MARGIN) as f64,
-                        (start_y as u32 * pixel_size + MARGIN) as f64,
-                    ); // Move the pen to the starting point
-                    self.context.line_to(
-                        (end_x as u32 * pixel_size + MARGIN) as f64,
-                        (end_y as u32 * pixel_size + MARGIN) as f64,
-                    ); // Draw a line to the ending point
+            assert_eq!(bitmap.len(), self.canvas.len());
+            assert_eq!(self.b.len(), self.canvas.len());
 
-                    self.context.stroke();
-                    self.context.close_path();
-                }
+            let interesting_pixels = bitmap * &self.b;
+
+            // When no line is drawn
+            let without_line = interesting_pixels.dot(&interesting_pixels);
+
+            // When the line is drawn
+            let diff = &string - &interesting_pixels;
+            let with_line = diff.dot(&diff);
+
+            let pixel_size = self.pixel_size;
+
+            if with_line < without_line {
+                // Draw the string
+                self.strings
+                    .push((self.strings_iteration as u16, end as u16));
+
+                self.context.begin_path();
+
+                self.context.move_to(
+                    (start_x as u32 * pixel_size + MARGIN) as f64,
+                    (start_y as u32 * pixel_size + MARGIN) as f64,
+                ); // Move the pen to the starting point
+                self.context.line_to(
+                    (end_x as u32 * pixel_size + MARGIN) as f64,
+                    (end_y as u32 * pixel_size + MARGIN) as f64,
+                ); // Draw a line to the ending point
+
+                self.context.stroke();
+                self.context.close_path();
             }
         }
+
+        self.strings_iteration += 1;
+    }
+
+    pub fn initialize_drawing_strings(&mut self) {
+        self.drawing_strings = true;
     }
 
     pub fn clear(&mut self) {
@@ -279,13 +304,11 @@ impl Disk {
     pub fn reset(&mut self) {
         self.filled_in = vec![false; self.canvas.len()];
         self.strings = Vec::new();
+        self.strings_iteration = 0;
+        self.drawing_strings = false;
     }
 
     // Getters and setters
-
-    pub fn get_pixel_size(&self) -> u32 {
-        self.pixel_size
-    }
 
     pub fn set_pixel_size(&mut self, size: u32) {
         self.pixel_size = size;
@@ -296,31 +319,7 @@ impl Disk {
         self.radius
     }
 
-    pub fn strings_size(&self) -> usize {
-        self.strings.len() * 2 // each line is two points
-    }
-
-    pub fn strings(&self) -> *const (u16, u16) {
-        self.strings.iter().cloned().collect::<Vec<_>>().as_ptr()
-    }
-
-    pub fn nails_size(&self) -> usize {
-        self.nails.len() * 2
-    }
-
-    pub fn nails(&self) -> *const (i32, i32) {
-        self.nails.as_ptr()
-    }
-
-    pub fn canvas_size(&self) -> usize {
-        self.canvas.len() * 2 // each line is two points
-    }
-
-    pub fn canvas(&self) -> *const (i32, i32) {
-        self.canvas.as_ptr()
-    }
-
-    pub fn filled_in(&self) -> *const bool {
-        self.filled_in.as_ptr()
+    pub fn get_center(&self) -> u32 {
+        self.radius + PADDING + MARGIN
     }
 }
