@@ -1,165 +1,106 @@
 import { Disk } from "wasm-string-art";
 
-let canvas = document.getElementById("myCanvas");
-let ctx = canvas.getContext("2d");
-let img = new Image();
+const disk = Disk.new();
 
-img.crossOrigin = "Anonymous"; // This enables CORS
-img.onload = function () {
-  // Create an offscreen canvas to draw the grayscale image
-  let offscreenCanvas = document.createElement("canvas");
-  let offscreenCtx = offscreenCanvas.getContext("2d");
+function getNewImage() {
+  fetch("https://faceapi.herokuapp.com/faces?n=1")
+    .then((response) => response.json())
+    .then((data) => {
+      const imageUrl = data[0].image_url;
+      const img = new Image();
 
-  offscreenCanvas.width = img.width;
-  offscreenCanvas.height = img.height;
+      // Request cross-origin access
+      img.crossOrigin = "anonymous";
 
-  offscreenCtx.drawImage(img, 0, 0, img.width, img.height);
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 64;
+        canvas.height = 64;
+        const context = canvas.getContext("2d");
 
-  // Get the image data from the offscreen canvas
-  let imgData = offscreenCtx.getImageData(0, 0, img.width, img.height);
-  let data = imgData.data;
+        // Calculate scale and offset to maintain aspect ratio
+        const scale = Math.min(
+          canvas.width / img.width,
+          canvas.height / img.height
+        );
+        const x = canvas.width / 2 - (img.width / 2) * scale;
+        const y = canvas.height / 2 - (img.height / 2) * scale;
 
-  // Convert the image to grayscale
-  for (let i = 0; i < data.length; i += 4) {
-    let avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-    data[i] = avg; // red
-    data[i + 1] = avg; // green
-    data[i + 2] = avg; // blue
-  }
+        // Draw the image onto the canvas
+        context.drawImage(img, x, y, img.width * scale, img.height * scale);
 
-  offscreenCtx.putImageData(imgData, 0, 0);
+        let imgData = context.getImageData(0, 0, canvas.width, canvas.height);
+        let pixels = imgData.data;
 
-  // Draw the grayscale image onto the visible canvas
-  ctx.drawImage(offscreenCanvas, 0, 0, 512, 512);
+        for (let i = 0; i < pixels.length; i += 4) {
+          let grayscale =
+            0.3 * pixels[i] + 0.59 * pixels[i + 1] + 0.11 * pixels[i + 2];
+
+          pixels[i] = grayscale; // red
+          pixels[i + 1] = grayscale; // green
+          pixels[i + 2] = grayscale; // blue
+        }
+
+        context.putImageData(imgData, 0, 0);
+
+        let pixelValues = [];
+        for (let i = 0; i < pixels.length; i += 4) {
+          pixelValues.push(pixels[i]); // just use one channel as they are all the same
+        }
+
+        let pixelArray = new Uint8Array(pixelValues);
+
+        disk.process_pixels(pixelArray);
+        disk.draw_nails();
+        disk.draw_canvas();
+        disk.draw_strings();
+      };
+
+      img.src = imageUrl;
+    });
+}
+const newImageButton = document.getElementById("new-image");
+
+newImageButton.addEventListener("click", (event) => {
+  getNewImage();
+});
+const imageModeButton = document.getElementById("image-mode-button");
+let imageMode = true;
+
+const activateImageMode = () => {
+  clear();
+  getNewImage();
+  imageModeButton.textContent = "stringify";
+  imageMode = true;
 };
 
-fetch(
-  "https://api.unsplash.com/photos/random?client_id=sJKNo5t2g_h5Q9mlvVGT9VM-jpsvbeiUEdGQVqA0_I8"
-)
-  .then((response) => response.json())
-  .then((data) => {
-    img.src = data.urls.raw;
-  });
+const clear = () => {
+  disk.reset();
+  disk.clear();
+};
 
-// const disk = Disk.new();
+const activateStringMode = () => {
+  disk.initialize_drawing_strings();
+  imageModeButton.textContent = "reset";
+  imageMode = false;
+  renderLoop();
+};
+imageModeButton.addEventListener("click", (event) => {
+  if (imageMode) {
+    activateStringMode();
+  } else {
+    activateImageMode();
+  }
+});
 
-// let drawing = false;
+// Initialize the canvas with the disk
+const renderLoop = () => {
+  disk.clear();
+  disk.draw_nails();
+  disk.draw_canvas();
+  disk.draw_strings();
 
-// let canvas = document.getElementById("string-art-canvas");
+  requestAnimationFrame(renderLoop);
+};
 
-// var centerX = disk.get_center();
-// var centerY = disk.get_center();
-
-// var radius = disk.get_radius();
-
-// canvas.addEventListener("mousedown", (event) => {
-//   if (!drawMode) return;
-
-//   drawing = true; // start drawing when the mouse is pressed
-//   draw(event); // draw immediately when the mouse is pressed
-// });
-
-// canvas.addEventListener("mousemove", (event) => {
-//   if (!drawMode) return;
-
-//   if (!drawing) return; // stop here if we're not drawing
-//   draw(event); // draw when mouse is moved
-// });
-
-// canvas.addEventListener("mouseup", () => {
-//   if (!drawMode) return;
-
-//   drawing = false; // stop drawing when the mouse is released
-// });
-
-// canvas.addEventListener("touchstart", (event) => {
-//   if (!drawMode) return;
-
-//   drawing = true; // start drawing when the touch is started
-//   draw(event.touches[0]); // draw immediately when the touch is started
-// });
-
-// canvas.addEventListener("touchmove", (event) => {
-//   if (!drawMode) return;
-
-//   if (!drawing) return; // stop here if we're not drawing
-//   draw(event.touches[0]); // draw when touch is moved
-// });
-
-// canvas.addEventListener("touchend", () => {
-//   if (!drawMode) return;
-
-//   drawing = false; // stop drawing when the touch ends
-// });
-
-// const drawModeButton = document.getElementById("draw-mode-button");
-
-// let drawMode = true;
-
-// const activateDrawMode = () => {
-//   clear();
-//   drawModeButton.textContent = "stringify";
-//   drawMode = true;
-// };
-
-// const clear = () => {
-//   disk.reset();
-//   disk.clear();
-// };
-
-// const activateStringMode = () => {
-//   disk.initialize_drawing_strings();
-//   drawModeButton.textContent = "reset";
-//   drawMode = false;
-// };
-
-// drawModeButton.addEventListener("click", (event) => {
-//   if (drawMode) {
-//     activateStringMode();
-//   } else {
-//     activateDrawMode();
-//   }
-// });
-
-// activateDrawMode();
-
-// function draw(event) {
-//   const boundingRect = canvas.getBoundingClientRect();
-//   const scaleX = canvas.width / boundingRect.width;
-//   const scaleY = canvas.height / boundingRect.height;
-
-//   const canvasLeft = (event.clientX - boundingRect.left) * scaleX;
-//   const canvasTop = (event.clientY - boundingRect.top) * scaleY;
-
-//   // Check if the point is within the circle
-//   const dx = centerX - canvasLeft;
-//   const dy = centerY - canvasTop;
-//   const distance = Math.sqrt(dx * dx + dy * dy);
-
-//   if (distance < radius) {
-//     // Only draw if within the circle
-//     disk.draw(canvasLeft, canvasTop);
-//   }
-// }
-
-// // Initialize the canvas with the disk
-// const renderLoop = () => {
-//   disk.clear();
-//   disk.draw_nails();
-//   disk.draw_canvas();
-//   disk.draw_strings();
-
-//   requestAnimationFrame(renderLoop);
-// };
-
-// disk.draw_nails();
-// disk.draw_canvas();
-// disk.draw_strings();
-// renderLoop();
-
-// const pixelSizeSlider = document.getElementById("pixel-size");
-
-// pixelSizeSlider.addEventListener("input", (event) => {
-//   clear();
-//   disk.set_pixel_size(event.target.value);
-// });
+getNewImage();

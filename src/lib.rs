@@ -3,13 +3,13 @@ mod utils;
 use std::{collections::HashMap, f64};
 extern crate js_sys;
 use line_drawing::{BresenhamCircle, XiaolinWu};
-use ndarray::{array, Array1, Array2};
+use ndarray::{array, Array1};
 use wasm_bindgen::prelude::*;
 
-const RADIUS: u32 = 256;
+const RADIUS: u32 = 512;
 const MARGIN: u32 = 16;
 const PADDING: u32 = 16;
-const STARTING_PIXEL_SIZE: u32 = 8;
+const STARTING_PIXEL_SIZE: u32 = 16;
 
 // A macro to provide `println!(..)`-style syntax for `console.log` logging.
 macro_rules! log {
@@ -24,7 +24,7 @@ pub struct Disk {
     strings: Vec<(u16, u16)>, // (x, y) means there exists a line between nail x to nail y
     nails: Vec<(i32, i32)>,
     canvas: Vec<(i32, i32)>,
-    filled_in: Vec<bool>,
+    image: Vec<u8>,
     context: web_sys::CanvasRenderingContext2d,
     index_hashmap: HashMap<(i32, i32), usize>,
     strings_iteration: usize,
@@ -54,14 +54,14 @@ impl Disk {
             .dyn_into::<web_sys::CanvasRenderingContext2d>()
             .unwrap();
 
-        context.set_global_alpha(0.3);
+        // context.set_global_alpha(0.3);
 
         let mut disk = Disk {
             pixel_size: STARTING_PIXEL_SIZE,
             radius: RADIUS,
             strings: Vec::new(),
             canvas: Vec::new(),
-            filled_in: Vec::new(),
+            image: Vec::new(),
             nails: Vec::new(),
             index_hashmap: HashMap::new(),
             context,
@@ -104,19 +104,20 @@ impl Disk {
     }
 
     pub fn draw_canvas(&mut self) {
+        self.context.set_global_alpha(1.0);
         // Draw the canvas.
-        for (index, filled_in) in self.filled_in.iter().enumerate() {
-            if !*filled_in {
-                continue;
-            }
-
+        for (index, pixel) in self.image.iter().enumerate() {
             let (x, y) = self.canvas[index];
 
             self.context.begin_path();
 
+            // Set the fill style to a grayscale color based on the pixel value
+            let color = format!("rgb({}, {}, {})", pixel, pixel, pixel);
+            self.context.set_fill_style(&color.into());
+
             self.context.fill_rect(
-                (x as u32 * self.pixel_size + MARGIN) as f64,
-                (y as u32 * self.pixel_size + MARGIN) as f64,
+                (x as u32 * self.pixel_size + MARGIN + PADDING) as f64,
+                (y as u32 * self.pixel_size + MARGIN + PADDING) as f64,
                 self.pixel_size as f64,
                 self.pixel_size as f64,
             );
@@ -127,14 +128,14 @@ impl Disk {
         }
     }
 
-    pub fn draw(&mut self, canvas_left: u32, canvas_top: u32) {
-        let x = (canvas_left - PADDING) / self.pixel_size;
-        let y = (canvas_top - PADDING) / self.pixel_size;
+    // pub fn draw(&mut self, canvas_left: u32, canvas_top: u32) {
+    //     let x = (canvas_left - PADDING) / self.pixel_size;
+    //     let y = (canvas_top - PADDING) / self.pixel_size;
 
-        if let Some(index) = self.index_hashmap.get(&(x as i32, y as i32)) {
-            self.filled_in[*index] = true;
-        }
-    }
+    //     if let Some(index) = self.index_hashmap.get(&(x as i32, y as i32)) {
+    //         self.image[*index] = true;
+    //     }
+    // }
 
     pub fn resize(&mut self) {
         self.nails = BresenhamCircle::new(
@@ -182,7 +183,7 @@ impl Disk {
 
         self.canvas = canvas.into_iter().map(|(x, y)| (x, y)).collect();
         self.index_hashmap = index_hashmap;
-        self.filled_in.resize(self.canvas.len(), false);
+        self.image.resize(self.canvas.len(), 0);
     }
 
     pub fn draw_strings(&mut self) {
@@ -193,17 +194,19 @@ impl Disk {
         if self.strings_iteration == 0 {
             // First iteration initiated by pressing the "Stringify" button in the frontend
             self.b = self
-                .filled_in
+                .image
                 .iter()
-                .map(|b| if *b { 255.0 } else { 0.0 })
+                .map(|b| 255.0 - *b as f32)
                 .collect::<Vec<_>>()
                 .into();
 
-            self.filled_in = vec![false; self.canvas.len()];
+            self.image = vec![255; self.canvas.len()];
         }
 
         // Draw the strings we have up to now (might be all of them)
         let pixel_size = self.pixel_size;
+
+        self.context.set_global_alpha(0.3);
 
         for (start, end) in &self.strings {
             self.context.begin_path();
@@ -244,7 +247,7 @@ impl Disk {
 
             for ((x, y), value) in values {
                 if let Some(index) = self.index_hashmap.get(&(x, y)) {
-                    string[*index] = value * 125.0;
+                    string[*index] = value * 255.0;
                 };
             }
 
@@ -265,6 +268,8 @@ impl Disk {
             let pixel_size = self.pixel_size;
 
             if with_line < without_line {
+                self.b = &self.b - 0.01 * &string;
+
                 // Draw the string
                 self.strings
                     .push((self.strings_iteration as u16, end as u16));
@@ -284,7 +289,6 @@ impl Disk {
                 self.context.close_path();
             }
         }
-
         self.strings_iteration += 1;
     }
 
@@ -302,7 +306,7 @@ impl Disk {
     }
 
     pub fn reset(&mut self) {
-        self.filled_in = vec![false; self.canvas.len()];
+        self.image = vec![255; self.canvas.len()];
         self.strings = Vec::new();
         self.strings_iteration = 0;
         self.drawing_strings = false;
@@ -321,5 +325,21 @@ impl Disk {
 
     pub fn get_center(&self) -> u32 {
         self.radius + PADDING + MARGIN
+    }
+
+    pub fn process_pixels(&mut self, pixels: &[u8]) {
+        assert_eq!(
+            pixels.len(),
+            (2 * RADIUS / STARTING_PIXEL_SIZE * 2 * RADIUS / STARTING_PIXEL_SIZE) as usize
+        );
+
+        for (index, pixel) in pixels.iter().enumerate() {
+            let x = index % (2 * RADIUS / STARTING_PIXEL_SIZE) as usize;
+            let y = index / (2 * RADIUS / STARTING_PIXEL_SIZE) as usize;
+
+            if let Some(index) = self.index_hashmap.get(&(x as i32, y as i32)) {
+                self.image[*index] = *pixel;
+            }
+        }
     }
 }
